@@ -1,0 +1,94 @@
+#!/bin/zsh
+# FocusSeal control script
+# Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log
+
+FSDIR="$HOME/.focus-seal"
+BIN="$FSDIR/bin/focus-seal"
+SRC="$FSDIR/src/FocusSeal.swift"
+PAUSE="$FSDIR/paused-until"
+LOG="$FSDIR/focus-seal.log"
+LABEL="com.focusseal"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
+
+case "$1" in
+  run)
+    # launchd entry point, fired at :00 and :30
+    if [[ -f "$PAUSE" ]]; then
+      until_ts=$(cat "$PAUSE" 2>/dev/null || echo 0)
+      now_ts=$(date +%s)
+      if (( now_ts < until_ts )); then
+        log "skipped: paused, $(( (until_ts - now_ts) / 60 )) min left"
+        exit 0
+      else
+        rm -f "$PAUSE"
+      fi
+    fi
+    if pgrep -f "$BIN" > /dev/null 2>&1; then
+      log "skipped: already running"
+      exit 0
+    fi
+    log "seal start"
+    "$BIN" --align >> "$LOG" 2>&1
+    log "seal end"
+    ;;
+
+  test)
+    "$BIN" --seconds "${2:-8}"
+    ;;
+
+  now)
+    "$BIN" --seconds "${2:-300}" &
+    echo "Sealing now for ${2:-300}s"
+    ;;
+
+  on)
+    launchctl unload "$PLIST" 2>/dev/null
+    launchctl load "$PLIST" && echo "FocusSeal enabled: 5-min seal at :00 and :30 every hour"
+    rm -f "$PAUSE"
+    ;;
+
+  off)
+    launchctl unload "$PLIST" 2>/dev/null && echo "FocusSeal disabled (re-enable: focusseal on)"
+    ;;
+
+  pause)
+    mins="${2:-60}"
+    echo $(( $(date +%s) + mins * 60 )) > "$PAUSE"
+    echo "Paused for $mins min (resume early: focusseal resume)"
+    ;;
+
+  resume)
+    rm -f "$PAUSE" && echo "Resumed"
+    ;;
+
+  rebuild)
+    swiftc -O -o "$BIN" "$SRC" -framework Cocoa && echo "Rebuilt"
+    ;;
+
+  log)
+    tail -n "${2:-20}" "$LOG"
+    ;;
+
+  status)
+    if launchctl list | grep -q "$LABEL"; then
+      echo "Schedule: enabled"
+    else
+      echo "Schedule: disabled"
+    fi
+    if [[ -f "$PAUSE" ]]; then
+      until_ts=$(cat "$PAUSE"); now_ts=$(date +%s)
+      if (( now_ts < until_ts )); then
+        echo "Paused: $(( (until_ts - now_ts) / 60 )) min left"
+      fi
+    fi
+    if pgrep -f "$BIN" > /dev/null 2>&1; then echo "State: sealing"; else echo "State: idle"; fi
+    echo "Next: every hour at :00 / :30"
+    ;;
+
+  *)
+    echo "Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log [n]"
+    exit 1
+    ;;
+esac

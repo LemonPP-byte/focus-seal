@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.focusseal</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>__FSDIR__/focusseal</string>
+        <string>run</string>
+    </array>
+
+    <!-- Fires at :00 and :30 of every hour -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+
+    <!-- Never seal right at login; wait for a real :00 / :30 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>__FSDIR__/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__FSDIR__/launchd.log</string>
+</dict>
+</plist>

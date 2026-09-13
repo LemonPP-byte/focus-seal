@@ -1,0 +1,4 @@
+bin/
+*.log
+paused-until
+.DS_Store
