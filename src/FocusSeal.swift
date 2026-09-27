@@ -1,6 +1,7 @@
 // FocusSeal — 整点强制休息封条
 // 在整点 :00 和 :30 各封屏 5 分钟，一个巨大的黑色 X 横铺全屏。
-// 解锁：直接键入解锁短语（默认 overridebreak）。
+// 倒计时走完不会自动解封：必须写下下一段的目标并回车，才放行（目标写进 goal.txt，刘海胶囊显示）。
+// 紧急解锁：倒计时中直接键入解锁短语；写目标阶段在输入框里键入解锁短语并回车。
 // 编译：swiftc -O -o bin/focus-seal FocusSeal.swift -framework Cocoa
 
 import Cocoa
@@ -9,7 +10,19 @@ import Cocoa
 let UNLOCK_PHRASE = "overridebreak"   // 强力解锁短语，键入即解封
 let SCRIM_ALPHA: CGFloat = 0.93       // X 以外区域的遮黑程度
 let X_THICKNESS: CGFloat = 0.13       // X 笔画粗细，占屏幕短边比例
-let HARD_LIMIT: TimeInterval = 420    // 失效保险：超过这个秒数无条件退出
+let HARD_LIMIT: TimeInterval = 1500   // 失效保险：超过这个秒数无条件退出（要给写目标阶段留足时间，但赶在下一次封屏前）
+let MIN_GOAL_CHARS = 2                // 目标至少几个字
+let GOAL_FILE = NSString(string: "~/.focus-seal/goal.txt").expandingTildeInPath
+
+func readGoal() -> String {
+    ((try? String(contentsOfFile: GOAL_FILE, encoding: .utf8)) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func logLine(_ msg: String) {
+    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    FileHandle.standardError.write("[\(f.string(from: Date()))] \(msg)\n".data(using: .utf8)!)
+}
 
 // ===== 命令行参数 =====
 var argSeconds: TimeInterval? = nil
@@ -68,6 +81,7 @@ final class SealView: NSView {
     var remaining: TimeInterval = DURATION
     var typed = ""
     var isPrimary = false   // 只在主屏显示倒计时文字
+    var goalPhase = false   // 倒计时走完，进入写目标阶段
 
     override var isOpaque: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -105,6 +119,8 @@ final class SealView: NSView {
 
         guard isPrimary else { return }
 
+        if goalPhase { drawGoalPrompt(r); return }
+
         // 3) 中心倒计时
         let secs = max(0, Int(remaining.rounded(.up)))
         let clock = String(format: "%d:%02d", secs / 60, secs % 60)
@@ -135,6 +151,33 @@ final class SealView: NSView {
         let hs = hint.size(withAttributes: hintAttrs)
         hint.draw(at: NSPoint(x: r.midX - hs.width / 2, y: 28), withAttributes: hintAttrs)
     }
+
+    // 写目标阶段：输入框本身是子视图，这里只画上下的文字
+    func drawGoalPrompt(_ r: NSRect) {
+        let title = "休息结束。下一段做什么？"
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: min(r.width, r.height) * 0.04, weight: .semibold),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.92),
+        ]
+        let ts = title.size(withAttributes: titleAttrs)
+        title.draw(at: NSPoint(x: r.midX - ts.width / 2, y: r.midY + 56), withAttributes: titleAttrs)
+
+        let sub = "写一件这 25 分钟里能做完的具体的事，回车进入下一段"
+        let subAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.42),
+        ]
+        let ss = sub.size(withAttributes: subAttrs)
+        sub.draw(at: NSPoint(x: r.midX - ss.width / 2, y: r.midY - 28 - 20 - ss.height), withAttributes: subAttrs)
+
+        let hint = "紧急解锁：在输入框里键入解锁短语并回车"
+        let hintAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.13),
+        ]
+        let hs = hint.size(withAttributes: hintAttrs)
+        hint.draw(at: NSPoint(x: r.midX - hs.width / 2, y: 28), withAttributes: hintAttrs)
+    }
 }
 
 // borderless 窗口默认不能成为 key window，键盘事件会收不到 —— 必须重写
@@ -153,6 +196,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var ticker: Timer?
     var keeper: Timer?
     var typed = ""
+    var goalPhase = false
+    var field: NSTextField?
+    var fieldBox: NSView?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -176,8 +222,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 每秒抢回前台，防止被切走
         keeper = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self, !self.unlocked else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            self.primary?.makeKeyAndOrderFront(nil)
+            // 只在真被切走时才抢，免得打断输入法的候选框
+            if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+            if self.primary?.isKeyWindow == false { self.primary?.makeKeyAndOrderFront(nil) }
         }
         // 失效保险：无论如何到点必退
         Timer.scheduledTimer(withTimeInterval: HARD_LIMIT, repeats: false) { _ in
@@ -185,10 +232,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
 
-        // 键盘监听：拦下所有按键，只认解锁短语
+        // 键盘监听：倒计时阶段拦下所有按键，只认解锁短语；
+        // 写目标阶段放行给输入框（含输入法），但仍吞掉 Cmd 组合键防止 Cmd-Q / Cmd-W
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] ev in
-            self?.handleKey(ev)
-            return nil   // 吞掉所有按键
+            guard let self else { return nil }
+            if self.goalPhase {
+                return ev.modifierFlags.contains(.command) ? nil : ev
+            }
+            self.handleKey(ev)
+            return nil
         }
 
         NSApp.activate(ignoringOtherApps: true)
@@ -230,12 +282,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         primary = keyWindow ?? windows.first
         primary?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if goalPhase { applyGoalPhase() }
     }
 
     func tick() {
         let left = deadline.timeIntervalSinceNow
-        if left <= 0 { finish(); return }
+        if left <= 0 { enterGoalPhase(); return }
         for v in views { v.remaining = left; v.needsDisplay = true }
+    }
+
+    // ===== 写目标阶段 =====
+    func enterGoalPhase() {
+        ticker?.invalidate()
+        goalPhase = true
+        logLine("休息结束，等待写目标")
+        applyGoalPhase()
+    }
+
+    func applyGoalPhase() {
+        // 屏蔽级窗口会盖住输入法候选框，降到 floating：仍高于所有普通窗口，
+        // 加上禁止切换应用、隐藏 Dock/菜单栏，其他应用照样够不着
+        for w in windows { w.level = .floating }
+        for v in views { v.goalPhase = true; v.needsDisplay = true }
+        installGoalField()
+    }
+
+    func installGoalField() {
+        guard let win = primary, let v = win.contentView else { return }
+        let draft = field?.stringValue ?? ""     // 插拔显示器重建时保留已输入的内容
+        fieldBox?.removeFromSuperview()
+
+        let W = min(640, v.bounds.width - 80), H: CGFloat = 56
+        let box = NSView(frame: NSRect(x: v.bounds.midX - W / 2, y: v.bounds.midY - H / 2, width: W, height: H))
+        box.wantsLayer = true
+        box.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
+        box.layer?.cornerRadius = 14
+        box.layer?.borderWidth = 1
+        box.layer?.borderColor = NSColor(white: 1, alpha: 0.18).cgColor
+
+        let f = NSTextField(string: draft)
+        f.isBordered = false
+        f.drawsBackground = false
+        f.focusRingType = .none
+        f.font = .systemFont(ofSize: 24, weight: .medium)
+        f.textColor = .white
+        f.alignment = .center
+        f.usesSingleLineMode = true
+        f.cell?.wraps = false
+        f.cell?.isScrollable = true
+        f.cell?.sendsActionOnEndEditing = false
+        let prev = readGoal()
+        // 占位文字不继承输入框的 alignment，得单独给段落样式才会居中
+        let centered = NSMutableParagraphStyle()
+        centered.alignment = .center
+        centered.lineBreakMode = .byTruncatingTail
+        f.placeholderAttributedString = NSAttributedString(
+            string: prev.isEmpty ? "比如：写完竞品分析第一部分" : "上一段：\(prev)",
+            attributes: [.foregroundColor: NSColor(white: 1, alpha: 0.28), .font: f.font!,
+                         .paragraphStyle: centered])
+        f.target = self
+        f.action = #selector(submitGoal)
+        let fh = f.cell!.cellSize.height
+        f.frame = NSRect(x: 20, y: (H - fh) / 2, width: W - 40, height: fh)
+
+        box.addSubview(f)
+        v.addSubview(box)
+        field = f
+        fieldBox = box
+        win.makeKeyAndOrderFront(nil)
+        win.makeFirstResponder(f)
+    }
+
+    @objc func submitGoal() {
+        let g = (field?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if g.lowercased() == UNLOCK_PHRASE {
+            logLine("紧急解锁，未写目标")
+            unlocked = true
+            finish()
+            return
+        }
+        guard g.count >= MIN_GOAL_CHARS else { shake(); return }
+        try? (g + "\n").write(toFile: GOAL_FILE, atomically: true, encoding: .utf8)
+        logLine("目标：\(g)")
+        unlocked = true
+        finish()
+    }
+
+    // 空着回车：输入框左右抖一下
+    func shake() {
+        guard let layer = fieldBox?.layer else { return }
+        let a = CAKeyframeAnimation(keyPath: "transform.translation.x")
+        a.values = [0, -14, 12, -8, 6, -3, 0]
+        a.duration = 0.4
+        layer.add(a, forKey: "shake")
     }
 
     func handleKey(_ ev: NSEvent) {

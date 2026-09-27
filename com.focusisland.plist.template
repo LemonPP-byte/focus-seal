@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.focusisland</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__FSDIR__/bin/focus-island</string>
+    </array>
+
+    <!-- Start at login, restart if it ever dies -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>__FSDIR__/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__FSDIR__/launchd.log</string>
+</dict>
+</plist>

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # FocusSeal control script
-# Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log
+# Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log|goal|island
 
 FSDIR="$HOME/.focus-seal"
 BIN="$FSDIR/bin/focus-seal"
@@ -9,6 +9,11 @@ PAUSE="$FSDIR/paused-until"
 LOG="$FSDIR/focus-seal.log"
 LABEL="com.focusseal"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+GOAL="$FSDIR/goal.txt"
+ISLAND_BIN="$FSDIR/bin/focus-island"
+ISLAND_SRC="$FSDIR/src/FocusIsland.swift"
+ISLAND_LABEL="com.focusisland"
+ISLAND_PLIST="$HOME/Library/LaunchAgents/$ISLAND_LABEL.plist"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
@@ -64,7 +69,36 @@ case "$1" in
     ;;
 
   rebuild)
-    swiftc -O -o "$BIN" "$SRC" -framework Cocoa && echo "Rebuilt"
+    swiftc -O -o "$BIN" "$SRC" -framework Cocoa \
+      && swiftc -O -o "$ISLAND_BIN" "$ISLAND_SRC" -framework Cocoa && echo "Rebuilt"
+    # the island is long-running; kill it so launchd (KeepAlive) restarts the new binary
+    pkill -f "$ISLAND_BIN" 2>/dev/null
+    ;;
+
+  goal)
+    # the goal shown in the notch island (normally written at the end of each break)
+    if [[ -z "$2" ]]; then
+      [[ -s "$GOAL" ]] && cat "$GOAL" || echo "(no goal set)"
+    elif [[ "$2" == "clear" ]]; then
+      : > "$GOAL" && echo "Goal cleared"
+    else
+      shift; echo "$*" > "$GOAL" && echo "Goal: $*"
+    fi
+    ;;
+
+  island)
+    case "$2" in
+      on)
+        launchctl unload "$ISLAND_PLIST" 2>/dev/null
+        launchctl load "$ISLAND_PLIST" && echo "Notch island enabled"
+        ;;
+      off)
+        launchctl unload "$ISLAND_PLIST" 2>/dev/null && echo "Notch island disabled (re-enable: focusseal island on)"
+        ;;
+      *)
+        echo "Usage: focusseal island on|off"
+        ;;
+    esac
     ;;
 
   log)
@@ -85,10 +119,12 @@ case "$1" in
     fi
     if pgrep -f "$BIN" > /dev/null 2>&1; then echo "State: sealing"; else echo "State: idle"; fi
     echo "Next: every hour at :00 / :30"
+    if launchctl list | grep -q "$ISLAND_LABEL"; then echo "Island: enabled"; else echo "Island: disabled"; fi
+    [[ -s "$GOAL" ]] && echo "Goal: $(cat "$GOAL")"
     ;;
 
   *)
-    echo "Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log [n]"
+    echo "Usage: focusseal on|off|status|test [sec]|now [sec]|pause <min>|resume|rebuild|log [n]|goal [text|clear]|island on|off"
     exit 1
     ;;
 esac

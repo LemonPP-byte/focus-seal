@@ -1,10 +1,11 @@
 #!/bin/zsh
-# FocusSeal installer — builds the binary, installs the launchd agent, enables the schedule.
+# FocusSeal installer — builds the binaries, installs the launchd agents, enables the schedule.
 set -e
 
 FSDIR="$HOME/.focus-seal"
 LABEL="com.focusseal"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+ISLAND_PLIST="$HOME/Library/LaunchAgents/com.focusisland.plist"
 REPO="${0:A:h}"
 
 echo "==> FocusSeal install"
@@ -41,19 +42,21 @@ fi
 
 # --- lay out files ---
 mkdir -p "$FSDIR/bin" "$FSDIR/src"
-cp "$REPO/src/FocusSeal.swift" "$FSDIR/src/"
+cp "$REPO/src/FocusSeal.swift" "$REPO/src/FocusIsland.swift" "$FSDIR/src/"
 cp "$REPO/focusseal" "$FSDIR/focusseal"
 chmod +x "$FSDIR/focusseal"
 
 # --- build ---
 echo "==> Compiling (may take ~10s)"
 swiftc -O -o "$FSDIR/bin/focus-seal" "$FSDIR/src/FocusSeal.swift" -framework Cocoa
-echo "    built: $FSDIR/bin/focus-seal"
+swiftc -O -o "$FSDIR/bin/focus-island" "$FSDIR/src/FocusIsland.swift" -framework Cocoa
+echo "    built: $FSDIR/bin/focus-seal, $FSDIR/bin/focus-island"
 
 # --- launchd agent, with the real home path substituted in ---
 mkdir -p "$HOME/Library/LaunchAgents"
 sed "s|__FSDIR__|$FSDIR|g" "$REPO/com.focusseal.plist.template" > "$PLIST"
-plutil -lint "$PLIST" > /dev/null
+sed "s|__FSDIR__|$FSDIR|g" "$REPO/com.focusisland.plist.template" > "$ISLAND_PLIST"
+plutil -lint "$PLIST" "$ISLAND_PLIST" > /dev/null
 
 # --- convenience command on PATH ---
 mkdir -p "$HOME/bin"
@@ -70,11 +73,15 @@ fi
 # --- enable ---
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
+launchctl unload "$ISLAND_PLIST" 2>/dev/null || true
+launchctl load "$ISLAND_PLIST"
 
 echo ""
 echo "==> Done. FocusSeal is live."
 echo "    Seals the screen for 5 minutes at :00 and :30 of every hour."
-echo "    Unlock during a seal by typing: overridebreak"
+echo "    When the countdown ends, type your goal for the next block and press Return."
+echo "    The goal then lives in a small island under the notch."
+echo "    Emergency unlock: type overridebreak"
 echo ""
 echo "    Try it now:  $FSDIR/focusseal test 8"
 echo "    Status:      focusseal status   (new terminal, or use the full path above)"
